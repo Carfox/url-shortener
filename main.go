@@ -2,19 +2,22 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 // VARIABLES
-var urlStore = make(map[string]UrlData)
-var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
-var currentID = 0
+var (
+	urlStore   = make(map[string]UrlData)
+	storeMutex sync.RWMutex
+	letters    = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+	currentID  = 0
+)
 
 // STRUCTS
 type UrlData struct {
@@ -48,25 +51,79 @@ func shortUrlGenerator(n int) string {
 	return string(b)
 }
 
-func saveUrl(url string, code string) (UrlData, error) {
-	if _, ok := urlStore[code]; ok {
-		return UrlData{}, errors.New("Internal Error, Try again!")
+func saveUrl(url string) (UrlData, error) {
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	for {
+
+		code := shortUrlGenerator(6)
+
+		if _, exists := urlStore[code]; exists {
+			continue // colisión → reintentar
+		}
+
+		currentID++
+
+		newRegister := UrlData{
+			ID:        currentID,
+			Url:       url,
+			ShortCode: code,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		urlStore[code] = newRegister
+		fmt.Println("ID saved:", currentID, "->", code)
+		return newRegister, nil
 	}
-	currentID++
 
-	newRegister := UrlData{
-		ID:        currentID,
-		Url:       url,
-		ShortCode: code,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+}
+
+func updateUrl(code string, newUrl string) (UrlData, bool) {
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	data, ok := urlStore[code]
+	if !ok {
+		return UrlData{}, false
 	}
 
-	urlStore[code] = newRegister
+	data.Url = newUrl
+	data.UpdatedAt = time.Now()
+	urlStore[code] = data
 
-	fmt.Println("ID saved:", currentID, "->", code)
-	return newRegister, nil
+	return data, true
+}
 
+func deleteUrl(code string) {
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	delete(urlStore, code)
+
+}
+
+func getUrl(code string) (UrlData, bool) {
+	storeMutex.RLock()
+	defer storeMutex.RUnlock()
+
+	data, ok := urlStore[code]
+	return data, ok
+}
+
+func getAndIncrementClick(code string) (UrlData, bool) {
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	data, ok := urlStore[code]
+	if !ok {
+		return UrlData{}, false
+	}
+
+	data.Clicks++
+	urlStore[code] = data
+
+	return data, true
 }
 
 // HANDLERS
@@ -88,7 +145,7 @@ func createShortUrlHandler(w http.ResponseWriter, r *http.Request) {
 		req.Url = "https://" + req.Url
 	}
 
-	answer, err := saveUrl(req.Url, shortUrlGenerator(6))
+	answer, err := saveUrl(req.Url)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -109,15 +166,13 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Path[1:]
 
-	data, ok := urlStore[code]
+	data, ok := getAndIncrementClick(code)
 
 	if !ok {
 		http.Error(w, "URL not found!", http.StatusNotFound)
 		return
 	}
 
-	data.Clicks++
-	urlStore[code] = data
 	http.Redirect(w, r, data.Url, http.StatusFound)
 }
 
@@ -132,7 +187,7 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := parts[2] // /<code>/
 
-	data, ok := urlStore[code]
+	data, ok := getUrl(code)
 	if !ok {
 		http.Error(w, "URL not found", http.StatusNotFound)
 		return
@@ -158,9 +213,12 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		data.Url = req.Url
-		data.UpdatedAt = time.Now()
-		urlStore[code] = data
+		data, ok = updateUrl(code, req.Url)
+
+		if !ok {
+			http.Error(w, "URL not found", http.StatusNotFound)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -184,7 +242,7 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodDelete {
-		delete(urlStore, code)
+		deleteUrl(code)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
