@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -79,9 +80,13 @@ func createShortUrlHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !strings.HasPrefix(req.Url, "http://") && !strings.HasPrefix(req.Url, "https://") {
+		req.Url = "https://" + req.Url
+	}
+
 	answer, err := saveUrl(req.Url, shortUrlGenerator(6))
 	if err != nil {
-		http.Error(w, err.Error(), 409)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 
@@ -91,12 +96,32 @@ func createShortUrlHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func redirectHandler(w http.ResponseWriter, r *http.Request) {
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
+
+	code := r.URL.Path[1:]
+
+	data, ok := urlStore[code]
+
+	if !ok {
+		http.Error(w, "URL not found!", http.StatusNotFound)
+		return
+	}
+
+	http.Redirect(w, r, data.Url, http.StatusFound)
+}
+
 func LoadUrls() {
 	fmt.Println(urlStore)
 }
 
 func main() {
 	http.HandleFunc("/shorten", createShortUrlHandler)
+	http.HandleFunc("/", redirectHandler)
 	fmt.Println("Servidor corriendo en http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
