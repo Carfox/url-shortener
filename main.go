@@ -18,16 +18,20 @@ var currentID = 0
 
 // STRUCTS
 type UrlData struct {
-	ID        int
-	Url       string
-	ShortCode string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID        int       `json:"id"`
+	Url       string    `json:"url"`
+	ShortCode string    `json:"short_code"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Clicks    int       `json:"access_count"`
 }
 
-type Page struct {
-	Title string
-	Body  []byte
+type UrlResponse struct {
+	ID        int       `json:"id"`
+	Url       string    `json:"url"`
+	ShortCode string    `json:"short_code"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type UrlRequest struct {
@@ -112,15 +116,86 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data.Clicks++
+	urlStore[code] = data
 	http.Redirect(w, r, data.Url, http.StatusFound)
 }
 
-func LoadUrls() {
-	fmt.Println(urlStore)
+func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+
+	// "/shorten/ - /<code>/ - /stats/"
+	if len(parts) < 3 || parts[2] == "" {
+		http.Error(w, "Missing code", http.StatusBadRequest)
+		return
+	}
+
+	code := parts[2] // /<code>/
+
+	data, ok := urlStore[code]
+	if !ok {
+		http.Error(w, "URL not found", http.StatusNotFound)
+		return
+	}
+
+	// GET shorten/<code>/stats
+	if len(parts) > 3 && parts[3] == "stats" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(data)
+		return
+	}
+
+	// PUT shorten/<code>/stats\
+	if r.Method == http.MethodPut {
+		var req UrlRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		data.Url = req.Url
+		data.UpdatedAt = time.Now()
+		urlStore[code] = data
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(data)
+		return
+	}
+
+	//GET /shorten/<code>
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		answer := UrlResponse{
+			ID:        data.ID,
+			Url:       data.Url,
+			ShortCode: data.ShortCode,
+			CreatedAt: data.CreatedAt,
+			UpdatedAt: data.UpdatedAt,
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(answer)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		delete(urlStore, code)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// If method doesnt exist!
+	http.Error(w, "Bad Request", http.StatusBadRequest)
 }
 
 func main() {
 	http.HandleFunc("/shorten", createShortUrlHandler)
+	http.HandleFunc("/shorten/", shortenRouteHandler)
 	http.HandleFunc("/", redirectHandler)
 	fmt.Println("Servidor corriendo en http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
