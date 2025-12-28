@@ -1,0 +1,25 @@
+# --- Binarios y Compilados ---
+url-shortener
+url-shortener.exe
+main
+main.exe
+
+# Archivos objeto temporales (rara vez se ven, pero por si acaso)
+*.o
+*.so
+
+# --- IDEs y Editores ---
+# Si usas VS Code
+.vscode/
+# Si usas GoLand / JetBrains
+.idea/
+*.iws
+*.iml
+*.ipr
+# Archivos temporales de vim/mac
+.DS_Store
+*.swp
+
+# --- Dependencias (Opcional) ---
+# En Go moderno NO se sube la carpeta vendor a menos que sea muy necesario
+vendor/
