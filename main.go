@@ -1,36 +1,36 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // VARIABLES
-var (
-	urlStore   = make(map[string]UrlData)
-	storeMutex sync.RWMutex
-	letters    = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
-	currentID  = 0
-)
+
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
 
 // STRUCTS
 type UrlData struct {
-	ID        int       `json:"id"`
-	Url       string    `json:"url"`
-	ShortCode string    `json:"short_code"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Clicks    int       `json:"access_count"`
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	Url       string    `json:"url" bson:"url"`
+	ShortCode string    `json:"short_code" bson:"short_code"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+	Clicks    int       `json:"access_count" bson:"access_count"`
 }
 
 type UrlResponse struct {
-	ID        int       `json:"id"`
+	ID        string    `json:"id"`
 	Url       string    `json:"url"`
 	ShortCode string    `json:"short_code"`
 	CreatedAt time.Time `json:"created_at"`
@@ -43,7 +43,7 @@ type UrlRequest struct {
 
 //  FUNCTIONS
 
-func shortUrlGenerator(n int) string {
+func codeGenerator(n int) string {
 	b := make([]rune, n)
 	for i := range b {
 		b[i] = letters[rand.Intn(len(letters))]
@@ -52,78 +52,100 @@ func shortUrlGenerator(n int) string {
 }
 
 func saveUrl(url string) (UrlData, error) {
-	storeMutex.Lock()
-	defer storeMutex.Unlock()
-
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	for {
+		code := codeGenerator(6)
+		filter := bson.M{"_id": code}
+		err := collection.FindOne(ctx, filter).Err()
 
-		code := shortUrlGenerator(6)
-
-		if _, exists := urlStore[code]; exists {
-			continue // colisión → reintentar
+		if err == nil {
+			fmt.Println("Already exists a code saved", code)
+			continue
 		}
 
-		currentID++
+		if err != mongo.ErrNoDocuments {
+			return UrlData{}, err
+		}
 
-		newRegister := UrlData{
-			ID:        currentID,
+		newURLRegister := UrlData{
+			ID:        code,
 			Url:       url,
 			ShortCode: code,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
-		urlStore[code] = newRegister
-		fmt.Println("ID saved:", currentID, "->", code)
-		return newRegister, nil
+
+		_, errInsert := collection.InsertOne(ctx, newURLRegister)
+		if errInsert != nil {
+			return UrlData{}, errInsert
+		}
+
+		fmt.Println("URL Saved:", url, "->", code)
+		return newURLRegister, nil
 	}
 
 }
 
-func updateUrl(code string, newUrl string) (UrlData, bool) {
-	storeMutex.Lock()
-	defer storeMutex.Unlock()
+func updateUrl(code string, newUrl string) (UrlData, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	data, ok := urlStore[code]
-	if !ok {
-		return UrlData{}, false
+	filter := bson.M{"_id": code}
+
+	update := bson.M{
+		"$set": bson.M{
+			"url":        newUrl,
+			"updated_at": time.Now(),
+		},
 	}
 
-	data.Url = newUrl
-	data.UpdatedAt = time.Now()
-	urlStore[code] = data
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 
-	return data, true
+	var updatedDoc UrlData
+
+	err := collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&updatedDoc)
+
+	return updatedDoc, err
 }
 
 func deleteUrl(code string) {
-	storeMutex.Lock()
-	defer storeMutex.Unlock()
-
-	delete(urlStore, code)
-
+	filter := bson.M{"_id": code}
+	collection.FindOneAndDelete(context.TODO(), filter)
 }
 
-func getUrl(code string) (UrlData, bool) {
-	storeMutex.RLock()
-	defer storeMutex.RUnlock()
+func getUrl(code string) (UrlData, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	data, ok := urlStore[code]
-	return data, ok
-}
+	var doc UrlData
 
-func getAndIncrementClick(code string) (UrlData, bool) {
-	storeMutex.Lock()
-	defer storeMutex.Unlock()
+	filter := bson.M{"_id": code}
 
-	data, ok := urlStore[code]
-	if !ok {
-		return UrlData{}, false
+	err := collection.FindOne(ctx, filter).Decode(&doc)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			fmt.Println("No documents found")
+		} else {
+			panic(err)
+		}
 	}
 
-	data.Clicks++
-	urlStore[code] = data
+	return doc, err
+}
 
-	return data, true
+func getUrlAndIncrement(code string) (UrlData, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := bson.M{"_id": code}
+	update := bson.M{"$inc": bson.M{"access_count": 1}}
+
+	var result UrlData
+	err := collection.FindOneAndUpdate(ctx, filter, update).Decode(&result)
+
+	return result, err
 }
 
 // HANDLERS
@@ -166,14 +188,14 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Path[1:]
 
-	data, ok := getAndIncrementClick(code)
+	doc, err := getUrlAndIncrement(code)
 
-	if !ok {
-		http.Error(w, "URL not found!", http.StatusNotFound)
+	if err != nil {
+		http.Error(w, "URL not found", 404)
 		return
 	}
 
-	http.Redirect(w, r, data.Url, http.StatusFound)
+	http.Redirect(w, r, doc.Url, http.StatusFound)
 }
 
 func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
@@ -187,8 +209,8 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := parts[2] // /<code>/
 
-	data, ok := getUrl(code)
-	if !ok {
+	data, err := getUrl(code)
+	if err != nil {
 		http.Error(w, "URL not found", http.StatusNotFound)
 		return
 	}
@@ -213,9 +235,9 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		data, ok = updateUrl(code, req.Url)
+		data, err = updateUrl(code, req.Url)
 
-		if !ok {
+		if err != nil {
 			http.Error(w, "URL not found", http.StatusNotFound)
 			return
 		}
@@ -230,7 +252,7 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
 		answer := UrlResponse{
-			ID:        data.ID,
+			ID:        data.ShortCode,
 			Url:       data.Url,
 			ShortCode: data.ShortCode,
 			CreatedAt: data.CreatedAt,
@@ -252,6 +274,7 @@ func shortenRouteHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	initDB()
 	http.HandleFunc("/shorten", createShortUrlHandler)
 	http.HandleFunc("/shorten/", shortenRouteHandler)
 	http.HandleFunc("/", redirectHandler)
